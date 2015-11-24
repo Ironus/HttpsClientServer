@@ -21,7 +21,9 @@
 // zamiana rodzajow polaczen na odpowiednie INTy
 #define GET 0
 #define POST 1
-
+//scieka do klucza i certyfikatu rsa
+#define SERVERKEYFILE "server.key"
+#define SERVERCERTFILE "server.crt"
 
 // strona, ktora zostanie wyslana do klienta przy nawiazaniu polaczenia
 const char* askPage = "<html><body>Wprowadz liczbe, ktorej silnie mam policzyc<br \\><form action=\"/numberpost\" method=\"post\"><input name=\"number\" type=\"text\"><input type=\"submit\" value=\"Oblicz\"></form></body></html>";
@@ -40,7 +42,6 @@ struct connectionInfo {
 // funkcja do obliczania silni
 char* getFactorial(const char* _factorial) {
   char* result = new char[MAXANSWERSIZE];
-  printf("%d\n", atoi(_factorial));
   int factorial = 1;
   for(int i = 1; i <= atoi(_factorial); i++) {
     factorial *= i;
@@ -172,15 +173,98 @@ int answerToConnection(void *cls, MHD_Connection *connection, const char *url, c
   return sendPage(connection, errorPage);
 }
 
+// funckja do pobierania rozmiaru pliku
+static long getFileSize (const char* _filename) {
+  // wskaznik na plik
+  FILE *fp = NULL;
+  // otworz plik
+  fp = fopen (_filename, "rb"); // do odczytu binarnie
+  // jesli otworzono prawidlowo
+  if (fp != NULL) {
+    // zmienna na rozmiar pliku
+    long size;
+    // jesli blad czytania rozmiaru badz koniec pliku
+    if ((fseek (fp, 0, SEEK_END) != 0) || ((size = ftell (fp)) == -1))
+      // to wpisz jako rozmiar 0
+      size = 0;
+    // zamknij plik
+    fclose (fp);
+    // zwroc rozmiar
+    return size;
+  }
+  // jesli blad otwierania to zwroc 0
+  return 0;
+}
+
+// funkcja do ladowania pliku z certyfikatem
+static char* loadFile(const char* _filename) {
+  // wskaznik na plik
+  FILE* fp = NULL;
+  // bufor
+  char* buffer = NULL;
+  // rozmiar pliku
+  long size = getFileSize(_filename);
+  // sprawdz czy rozmiar ok
+  if (size == 0)
+    return NULL;
+  // otworz plik
+  fp = fopen(_filename, "rb"); // czytaj binarnie
+  // sprawdz czy otworzono poprawnie
+  if(fp == NULL)
+    return NULL;
+  // zarezerwuj pamiec na bufor
+  buffer = new char[size];
+  // sprawdz czy zarezerwowano popranie
+  if (buffer == NULL) {
+    // jesli nie, to zamknij plik
+    fclose(fp);
+    return NULL;
+  }
+  // przeczytaj plik i spradz poprawnosc
+  if(size != fread (buffer, 1, size, fp)) {
+    // zwolnij bufor
+    free (buffer);
+    // ustaw wskaznik na NULL
+    buffer = NULL;
+  }
+  // zamknij plik
+  fclose (fp);
+  // zwroc bufor
+  return buffer;
+}
+
 int main(int argc, char* argv[]) {
+  // utworz obiekt zarzadzajacy polaczeniem
   MHD_Daemon *daemon;
-  daemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, PORT, NULL, NULL, &answerToConnection, NULL, MHD_OPTION_NOTIFY_COMPLETED, &requestCompleted, NULL, MHD_OPTION_END);
-
-  if(NULL == daemon)
+  // utworz zmienne przetrzymujace certyfikat i klucz publiczny
+  char* key_pem;
+  char* cert_pem;
+  // zaladuj certyfikat i klucz publiczny
+  key_pem = loadFile(SERVERKEYFILE);
+  cert_pem = loadFile(SERVERCERTFILE);
+  // sprawdz czy zaladowano poprawnie
+  if((key_pem == NULL) || (cert_pem == NULL)) {
+    printf ("Blad ladowania certyfikatu/klucza publicznego.\n");
     return 1;
+  }
+  // wystartuj serwer
+  daemon = MHD_start_daemon(MHD_USE_SELECT_INTERNALLY | MHD_USE_SSL, PORT, NULL, NULL, &answerToConnection, NULL, MHD_OPTION_HTTPS_MEM_KEY, key_pem, MHD_OPTION_HTTPS_MEM_CERT, cert_pem, MHD_OPTION_NOTIFY_COMPLETED, &requestCompleted, NULL, MHD_OPTION_END);
 
+  // sprawdz czy poprawnie serwer poprawnie wystartowal
+  if(NULL == daemon) {
+    // jesli nie, to wywal blad i zwolnij pamiec
+    printf("Blad tworzenia serwera.\n");
+    free(key_pem);
+    free(cert_pem);
+    return 1;
+  }
+  // czekaj na klawisz, aby zatrzymac serwer
   getchar();
+  // zatrzymaj serwer
   MHD_stop_daemon(daemon);
+  // zwolnij pozostala pamiec
+  free(key_pem);
+  free(cert_pem);
 
   return 0;
 }
