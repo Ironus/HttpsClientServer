@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#include <sstream>
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -10,42 +12,169 @@
 
 // port na ktorym nasluchuje serwer
 #define PORT 8080
+// rozmiar bufora POST
+#define POSTBUFFERSIZE 512
+// maksymalna dlugosc pola
+#define MAXNUMBERSIZE 20
+// maksymalna dlugosc odpowiedzi
+#define MAXANSWERSIZE 512
+// zamiana rodzajow polaczen na odpowiednie INTy
+#define GET 0
+#define POST 1
 
-// funkcja odpowiedzialna za wyslanie odpowiedzi do klienta
-int answer_to_connection(void *cls, struct MHD_Connection *connection, const char *url, const char *method, const char *version, const char *upload_data, size_t *upload_data_size, void **con_cls) {
-  // strona, ktora zostanie wyslana do klienta
-  const char *page = "<html><body>Hello, browser!</body></html>";
-  struct MHD_Response *response;
-  int ret;
 
-  // zmienna do przetrzymania klienta
-  static int aptr;
+// strona, ktora zostanie wyslana do klienta przy nawiazaniu polaczenia
+const char* askPage = "<html><body>Wprowadz liczbe, ktorej silnie mam policzyc<br \\><form action=\"/numberpost\" method=\"post\"><input name=\"number\" type=\"text\"><input type=\"submit\" value=\"Oblicz\"></form></body></html>";
+// strona z komunikatem bledu
+const char* errorPage = "<html><body>Cos poszlo nie tak. Blad.</body></html>";
+// strona sukcesu
+const char* successPage = "<html><body>Wynik: %s</body></html>";
 
-  // sprawdzenie czy metoda to GET czy POST
-  if (0 != strcmp (method, "GET"))
-  // jesli POST zwroc blad
-    return MHD_NO;
-  // przetrzymaj klienta
-  if (&aptr != *con_cls) {
-    *con_cls = &aptr;
-    return MHD_YES;
+// struktura do przechowywania polaczenia i odpowiedzi dla niego
+struct connectionInfo {
+  int connectionType;
+  char* factorial;
+  struct MHD_PostProcessor* postprocessor;
+};
+
+// funkcja do obliczania silni
+char* getFactorial(const char* _factorial) {
+  char* result = new char[MAXANSWERSIZE];
+  printf("%d\n", atoi(_factorial));
+  int factorial = 1;
+  for(int i = 1; i <= atoi(_factorial); i++) {
+    factorial *= i;
   }
-  // wyzeruj wskaznik con_cls
-  con_cls = NULL;
 
-  // przygotuj odpowiedz
-  response = MHD_create_response_from_buffer(strlen (page), (void*) page, MHD_RESPMEM_PERSISTENT);
-  ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+  std::stringstream strs;
+  strs << factorial;
+  std::string tempString;
+  tempString = strs.str();
+  strcpy(result, tempString.c_str());
 
-  // zwolnij pamiec
-  MHD_destroy_response(response);
-  // zwroc odpowiedz
+  return result;
+}
+
+static int sendPage (struct MHD_Connection *connection, const char *page) {
+  int ret;
+  struct MHD_Response *response;
+  response = MHD_create_response_from_buffer (strlen (page), (void *) page, MHD_RESPMEM_PERSISTENT);
+  if (!response)
+    return MHD_NO;
+  ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
+  MHD_destroy_response (response);
   return ret;
 }
 
+// funkcja wywolywana po zakonczeniu polaczenia (z sukcesem badz bez) do zwolnienia pamieci
+void requestCompleted (void *cls, struct MHD_Connection *connection, void **con_cls, enum MHD_RequestTerminationCode toe) {
+  // utworz obiekt struktury do przechowywania polaczenia
+  connectionInfo* con_info = static_cast<connectionInfo*>(*con_cls);
+  // sprawdz poprawnosc
+  if(con_info == NULL)
+    return;
+  // sprawdz rodzaj polaczenia
+  if(con_info->connectionType == POST) {
+    // zwolnij postprocesor
+    MHD_destroy_post_processor (con_info->postprocessor);
+    // sprawdz czy zostala obliczona silnia
+    if(con_info->factorial)
+      delete(con_info->factorial);
+  }
+  // zwolnij obiekt struktury polaczenia
+  delete(con_info);
+  // wpisz NULL do wskaznika
+  *con_cls = NULL;
+}
+
+// funkcja odpowiedzialna za wczytanie calego polecenia POST
+static int iteratePost (void* coninfo_cls, enum MHD_ValueKind kind, const char* key, const char* filename, const char* content_type, const char* transfer_encoding, const char* data, uint64_t off, size_t size) {
+  // utworz obiekt struktury connectionInfo
+  connectionInfo* con_info = static_cast<connectionInfo*>(coninfo_cls);
+  // sprawdz czy zostaly wprowadzone dane do formularza
+  if(strcmp (key, "number") == 0) {
+    if((size > 0) && (size <= MAXNUMBERSIZE)) {
+      // utworz wskaznik do zmiennej przechowujacej silnie
+      char* factorial = new char[MAXANSWERSIZE];
+      // sprawdz poprawnosc utworzenia wskaznika
+      if(!factorial)
+        return MHD_NO;
+      // oblicz silnie i przepisz do bufora
+      snprintf(factorial, MAXANSWERSIZE, successPage, getFactorial(data));
+      // przepisz silnie do struktury
+      con_info->factorial = factorial;
+    } else
+      // jesli blad rozmiaru, wpisz NULL do silni
+      con_info->factorial = NULL;
+    return MHD_NO;
+  }
+  return MHD_YES;
+}
+
+// funkcja odpowiedzialna za wyslanie odpowiedzi do klienta
+int answerToConnection(void *cls, MHD_Connection *connection, const char *url, const char *method, const char *version, const char *upload_data, size_t *upload_data_size, void **con_cls) {
+  // sprawdz czy odpowiedz jest pusta
+  if(*con_cls == NULL) {
+    // stworz obiekt stukruty polaczenia
+    connectionInfo *con_info;
+    // zarezerwuj pamiec na dane w strukturze
+    con_info = new connectionInfo;
+    // sprawdz czy polaczenie prawidlowe
+    if(con_info == NULL)
+      // jesli nie, to nie otwieraj polaczenia
+      return MHD_NO;
+    // wpisz NULL jako silnie
+    con_info->factorial = NULL;
+    // sprawdz metode polaczenia
+    if(strcmp(method, "POST") == 0) {
+      // jesli POST, to stworz postprocesor
+      con_info->postprocessor = MHD_create_post_processor(connection, POSTBUFFERSIZE, iteratePost, (void*)con_info);
+      // sprawdz poprawnosc utworzenia postprocesora
+      if (con_info->postprocessor == NULL) {
+        // jesli blad, zwolnij obiekt struktury polaczenia
+        delete(con_info);
+        // i nie otwieraj polaczenia
+        return MHD_NO;
+      }
+      // jesli wszystko ok, to zapisz w strukturze jako typ polaczenia POST
+      con_info->connectionType = POST;
+    } else if(strcmp(method, "GET") == 0) {
+      // jezeli metoda GET, to wpisz GET do obiektu polaczenia
+      con_info->connectionType = GET;
+    }
+    // przepisz obiekt polaczenia jako obiekt wyjsciowy
+    *con_cls = (void*)con_info;
+    // otworz polaczenie
+    return MHD_YES;
+  }
+  // jesli zapytanie GET, to wyslij formularz
+  if(strcmp (method, "GET") == 0) {
+    return sendPage(connection, askPage);
+  }
+  // jesli zapytanie POST
+  if(strcmp (method, "POST") == 0) {
+    // stworz obiekt polaczenia
+    connectionInfo* con_info = static_cast<connectionInfo*>(*con_cls);
+    // sprawdz czy sa jakies dane przychodzace
+    if(*upload_data_size != 0) {
+      // odczytaj dane
+      MHD_post_process(con_info->postprocessor, upload_data, *upload_data_size);
+      // ustaw na 0, zeby powiadomic, ze odebrano wszystkie dane
+      *upload_data_size = 0;
+      // otworz polaczenie
+      return MHD_YES;
+    // sprawdz czy silnia do obliczenia nie jest zerem
+    } else if(con_info->factorial != NULL)
+    // jesli tak, to wyslij odpowiednia strone
+    return sendPage(connection, con_info->factorial);
+  }
+  // jezeli zadanie ani POST ani GET, to zwroc blad
+  return sendPage(connection, errorPage);
+}
+
 int main(int argc, char* argv[]) {
-  struct MHD_Daemon *daemon;
-  daemon = MHD_start_daemon(MHD_USE_SELECT_INTERNALLY, PORT, NULL, NULL, &answer_to_connection, NULL, MHD_OPTION_END);
+  MHD_Daemon *daemon;
+  daemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, PORT, NULL, NULL, &answerToConnection, NULL, MHD_OPTION_NOTIFY_COMPLETED, &requestCompleted, NULL, MHD_OPTION_END);
 
   if(NULL == daemon)
     return 1;
