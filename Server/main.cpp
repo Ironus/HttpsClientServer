@@ -26,11 +26,11 @@
 #define SERVERCERTFILE "server.crt"
 
 // strona, ktora zostanie wyslana do klienta przy nawiazaniu polaczenia
-const char* askPage = "<html><body>Wprowadz liczbe, ktorej silnie mam policzyc<br \\><form action=\"/numberpost\" method=\"post\"><input name=\"number\" type=\"text\"><input type=\"submit\" value=\"Oblicz\"></form></body></html>";
+const char* askPage = "Serwer obsluguje jedynie zadania POST";
 // strona z komunikatem bledu
-const char* errorPage = "<html><body>Cos poszlo nie tak. Blad.</body></html>";
+const char* errorPage = "Cos poszlo nie tak.";
 // strona sukcesu
-const char* successPage = "<html><body>Wynik: %s</body></html>";
+const char* successPage = "Wynik: %s";
 
 // struktura do przechowywania polaczenia i odpowiedzi dla niego
 struct connectionInfo {
